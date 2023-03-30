@@ -32,15 +32,7 @@ trapinithart(void)
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
-// 判断va地址是否合法，如果va大于sz或者当虚拟地址比进程的用户栈还小，则不合法
-int isValid(struct proc *p, uint64 va) {
-  uint64 stackbase = PGROUNDDOWN(p->trapframe->sp);
-  if (va >= p->sz || (va < stackbase)) 
-    return 0;
-  return 1;
-}
-void* cowalloc(pagetable_t pagetable, uint64 va);
-int cowpage(pagetable_t pagetable, uint64 va);
+//
 void
 usertrap(void)
 {
@@ -75,11 +67,7 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else if(r_scause() == 13 || r_scause() == 15){
-    uint64 va = r_stval();  // 获取出错的虚拟地址
-    if(va >= p->sz || cowpage(p->pagetable, va) != 0 || cowalloc(p->pagetable, PGROUNDDOWN(va)) == 0)
-    p->killed = 1;
-  }else {
+  } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
@@ -93,62 +81,6 @@ usertrap(void)
     yield();
 
   usertrapret();
-}
-
-
-int cowpage(pagetable_t pagetable, uint64 va) {
-  if(va >= MAXVA) //超过虚拟空间最大地址
-    return -1;
-  pte_t* pte = walk(pagetable, va, 0);
-  if(pte == 0)
-    return -1;
-  if((*pte & PTE_V) == 0) //不可用页
-    return -1;
-  return (*pte & PTE_F ? 0 : -1); //确认为cow页
-}
-
-//cowalloc copy-on-write分配器
-
-void* cowalloc(pagetable_t pagetable, uint64 va) {
-  if(va % PGSIZE != 0)
-    return 0;
-
-  uint64 pa = walkaddr(pagetable, va);  // 获取对应的物理地址
-  if(pa == 0)
-    return 0;
-
-  pte_t* pte = walk(pagetable, va, 0);  // 获取对应的PTE
-  //uint64  flags = (PTE_FLAGS(*pte) | PTE_W) & ~PTE_F;
-  if(krefcnt(pa) == 1) {
-    // 只剩一个进程对此物理地址存在引用
-    // 则直接修改对应的PTE即可
-    *pte |= PTE_W;
-    *pte &= ~PTE_F;
-    return (void*)pa;
-  } else {
-    // 多个进程对物理内存存在引用
-    // 需要分配新的页面，并拷贝旧页面的内容
-    char* mem = kalloc();
-    if(mem == 0)
-      return 0;
-
-    // 复制旧页面内容到新页
-    memmove(mem, (char*)pa, PGSIZE);
-
-    // 清除PTE_V，否则在mappagges中会判定为remap
-    *pte &= ~PTE_V;
-
-    // 为新页面添加映射
-    if(mappages(pagetable, va, PGSIZE, (uint64)mem, (PTE_FLAGS(*pte) | PTE_W) & ~PTE_F) != 0) {
-      kfree(mem);
-      *pte |= PTE_V;
-      return 0;
-    }
-
-    // 将原来的物理内存引用计数减1
-    kfree((char*)PGROUNDDOWN(pa));
-    return mem;
-  }
 }
 
 //

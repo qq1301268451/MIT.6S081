@@ -162,7 +162,6 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
 // Remove npages of mappings starting from va. va must be
 // page-aligned. The mappings must exist.
 // Optionally free the physical memory.
-// 解除映射
 void
 uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 {
@@ -174,7 +173,6 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
-      //continue; //未分配页面不报错
       panic("uvmunmap: walk");
     if((*pte & PTE_V) == 0)
       panic("uvmunmap: not mapped");
@@ -293,8 +291,6 @@ uvmfree(pagetable_t pagetable, uint64 sz)
   freewalk(pagetable);
 }
 
-
-
 // Given a parent process's page table, copy
 // its memory into a child's page table.
 // Copies both the page table and the
@@ -307,32 +303,28 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  //char *mem;
+  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist"); //旧页面 pte 不存在
+      panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present"); //旧页面 不存在
+      panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if( flags & PTE_W ){ //仅对写做pte_w
-      flags = ( flags | PTE_F ) & ~ PTE_W; // 设置page fault ， 移除可写权限
-      *pte = PA2PTE(pa) | flags;
+    if((mem = kalloc()) == 0)
+      goto err;
+    memmove(mem, (char*)pa, PGSIZE);
+    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+      kfree(mem);
+      goto err;
     }
-    // kaddrefcnt(pa);//对所有页增加引用计数 1
-    // memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, pa, flags) != 0){ //映射同一物理页
-      uvmunmap( new, 0, i / PGSIZE, 1);
-      return -1;
-      //goto err;
-    }
-    kaddrefcnt(pa);//对所有页增加引用计数 应该在该处增加，理由 如若未映射成功，函数返回后，会产生没有映射成功却有页增加了引用，造成永远不会被释放。
   }
   return 0;
-//  err:
-//   uvmunmap(new, 0, i / PGSIZE, 1);
-//   return -1;
+
+ err:
+  uvmunmap(new, 0, i / PGSIZE, 1);
+  return -1;
 }
 
 // mark a PTE invalid for user access.
@@ -359,10 +351,6 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
-    if( cowpage(pagetable,va0) == 0 ){
-      pa0 = (uint64) cowalloc( pagetable,va0 );
-    }
-
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (dstva - va0);
